@@ -3,9 +3,9 @@
 #include <WiFi.h>
 
 // ===========================
-// Select camera model in board_config.h
+// Select camera model in camera-files/board_config.h
 // ===========================
-#include "board_config.h"
+#include "camera-files/board_config.h"
 
 // ===========================
 // Enter your WiFi credentials
