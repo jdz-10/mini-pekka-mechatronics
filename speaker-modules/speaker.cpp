@@ -1,37 +1,43 @@
 #include <Arduino.h>
-#include <ESP_I2S.h>
+#include <Audio.h>
+#include <LittleFS.h>
 
-I2SClass I2S;
+#define I2S_BCLK 47
+#define I2S_LRC  14
+#define I2S_DOUT 1
 
-#define BCLK_PIN 47
-#define LRC_PIN  14
-#define DATA_PIN 1
+Audio audio;
+
+unsigned long lastPlay = 0;
 
 void setup() {
-  I2S.setPins(BCLK_PIN, LRC_PIN, DATA_PIN);
+  Serial.begin(115200);
+  delay(1000);
 
-  I2S.begin(
-    I2S_MODE_STD,
-    8000,
-    I2S_DATA_BIT_WIDTH_16BIT,
-    I2S_SLOT_MODE_STEREO
-  );
+  if (!LittleFS.begin(false)) {
+    Serial.println("LittleFS failed");
+    while (true);
+  }
+
+  audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
+
+  audio.setVolumeSteps(255);
+  audio.setVolume(20);
+
+  audio.forceMono(true);
+
+  Serial.println("Playing...");
+  audio.connecttoFS(LittleFS, "/ben.mp3");
 }
 
 void loop() {
-  static bool highState = false;
+  audio.loop();
 
-  int16_t sample = highState ? 12000 : -12000;
-
-  int16_t stereo[2] = {
-    sample,
-    sample
-  };
-
-  // Hold each polarity for ~10 ms
-  for (int i = 0; i < 80; i++) {
-    I2S.write((uint8_t*)stereo, sizeof(stereo));
+  if (!audio.isRunning() && millis() - lastPlay > 3000) {
+    Serial.println("Playing Ben");
+    audio.connecttoFS(LittleFS, "/ben.mp3");
+    lastPlay = millis();
   }
 
-  highState = !highState;
+  vTaskDelay(1);
 }
