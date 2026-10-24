@@ -1,16 +1,19 @@
-"""Mini Pekka: ESP32 video plus body-tracking preview on your laptop.
+﻿"""Mini Pekka: ESP32 video plus body-tracking preview on your laptop.
 
 Put pose_landmarker_lite.task beside this file. Download it from:
 https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task
 
 Run with the same Python environment as your working camera test.
-Requires mediapipe and OpenCV. This preview does not send motor commands.
+Requires mediapipe and OpenCV. An optional servo ESP32 receives head-angle commands.
 """
 
 import argparse
 import math
+import socket
+import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import cv2
 import mediapipe as mp
@@ -19,6 +22,11 @@ import mediapipe as mp
 MODEL_PATH = Path(__file__).with_name("pose_landmarker_lite.task")
 MIN_VISIBILITY = 0.6
 SMOOTHING = 0.25  # Larger values respond faster; smaller values smooth more.
+SERVO_UPDATE_INTERVAL = 0.25
+SERVO_MIN_CHANGE = 2
+SERVO_MIN_ANGLE = 0
+SERVO_MAX_ANGLE = 180
+SERVO_UDP_PORT = 4210
 WINDOW = "Mini Pekka - body tracking (Q to quit)"
 
 # Left/right refer to YOUR body, not the left/right sides of the picture.
@@ -79,19 +87,156 @@ def draw_points(image, landmarks):
         cv2.circle(image, point, 6 if index == 0 else 4, color, -1)
 
 
+def normalize_camera_url(value):
+    """Accept a board IP, board URL, or stream URL and return the MJPEG URL."""
+    value = value.strip()
+    if not value:
+        raise SystemExit("No camera IP or URL entered.")
+    if "://" not in value:
+        value = f"http://{value}"
+
+    parsed = urlsplit(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise SystemExit("Enter an ESP32 IP or an http:// camera URL.")
+
+    hostname = parsed.hostname
+    if hostname is None:
+        raise SystemExit("Enter a valid ESP32 IP or camera URL.")
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+
+    return urlunsplit((parsed.scheme, f"{hostname}:81", "/stream", "", ""))
+
+
+def servo_url_from_camera_url(camera_url):
+    parsed = urlsplit(camera_url)
+    hostname = parsed.hostname
+    if hostname is None:
+        raise SystemExit("Enter a valid ESP32 IP or camera URL.")
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    return urlunsplit((parsed.scheme, hostname, "", "", ""))
+
+
 def stream_url_from_user():
-    """Ask for the IP printed by the ESP32's most recent Serial Monitor run."""
+    """Ask for the combined camera/servo ESP32 IP or any camera URL."""
     url = input(
-        "ESP32 stream URL (for example http://192.168.x.x:81/stream): "
-    ).strip()
-    if not url:
-        raise SystemExit("No stream URL entered.")
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise SystemExit("Use a plain URL beginning with http://, not Markdown link formatting.")
-    return url
+        "ESP32 IP or stream URL (for example 192.168.x.x): "
+    )
+    return normalize_camera_url(url)
 
 
-def main(camera_url):
+class ServoClient:
+    def __init__(self, base_url):
+        parsed = urlsplit(base_url)
+        self.host = parsed.hostname
+        if self.host is None:
+            raise SystemExit("Invalid servo board URL.")
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.pending_angle = None
+        self.last_sent_angle = None
+        self.last_error_at = 0.0
+        self.condition = threading.Condition()
+        self.running = True
+        self.worker = threading.Thread(target=self._send_pending, daemon=True)
+        self.worker.start()
+
+    def send_angle(self, angle):
+        with self.condition:
+            if (
+                self.pending_angle is not None
+                and abs(angle - self.pending_angle) < SERVO_MIN_CHANGE
+            ) or (
+                self.last_sent_angle is not None
+                and abs(angle - self.last_sent_angle) < SERVO_MIN_CHANGE
+            ):
+                return
+            self.pending_angle = angle
+            self.condition.notify()
+
+    def _send_pending(self):
+        while True:
+            with self.condition:
+                while self.running and self.pending_angle is None:
+                    self.condition.wait()
+                if not self.running:
+                    return
+                angle = self.pending_angle
+                self.pending_angle = None
+
+            try:
+                self.socket.sendto(
+                    f"{angle}\n".encode("ascii"),
+                    (self.host, SERVO_UDP_PORT),
+                )
+            except OSError as error:
+                now = time.monotonic()
+                if now - self.last_error_at >= 2.0:
+                    print(f"Servo UDP command failed ({self.host}:{SERVO_UDP_PORT}): {error}")
+                    self.last_error_at = now
+                continue
+
+            with self.condition:
+                self.last_sent_angle = angle
+            time.sleep(SERVO_UPDATE_INTERVAL)
+
+    def close(self):
+        with self.condition:
+            self.running = False
+            self.condition.notify()
+        self.worker.join(timeout=1.0)
+        self.socket.close()
+
+
+class LatestFrameCapture:
+    """Read the network stream continuously while the detector processes frames."""
+
+    def __init__(self, url):
+        self.capture = cv2.VideoCapture(url)
+        self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.frame = None
+        self.lock = threading.Lock()
+        self.running = self.capture.isOpened()
+        self.thread = threading.Thread(target=self._read_frames, daemon=True)
+        if self.running:
+            self.thread.start()
+
+    def _read_frames(self):
+        while self.running:
+            success, frame = self.capture.read()
+            if not success or frame is None:
+                self.running = False
+                return
+            with self.lock:
+                self.frame = frame
+
+    def isOpened(self):
+        return self.capture.isOpened()
+
+    def read(self):
+        with self.lock:
+            if self.frame is None:
+                return False, None
+            return True, self.frame.copy()
+
+    def release(self):
+        self.running = False
+        self.capture.release()
+        if self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+
+
+def head_angle_from_nose_x(nose_x):
+    """Map image position to head angle; image-left is servo-right."""
+    return round(
+        SERVO_MAX_ANGLE
+        - nose_x * (SERVO_MAX_ANGLE - SERVO_MIN_ANGLE)
+    )
+
+
+def main(camera_url, servo_url=None):
+    camera_url = normalize_camera_url(camera_url)
+    servo_url = servo_url or servo_url_from_camera_url(camera_url)
     if not MODEL_PATH.is_file():
         raise SystemExit(
             "Missing pose model. Save pose_landmarker_lite.task beside this script:\n"
@@ -108,7 +253,9 @@ def main(camera_url):
     )
 
     print(f"Connecting to {camera_url}")
-    cap = cv2.VideoCapture(camera_url)
+    print(f"Sending head commands to {servo_url}")
+    servo = ServoClient(servo_url)
+    cap = LatestFrameCapture(camera_url)
     try:
         if not cap.isOpened():
             raise SystemExit("Could not open the camera. Check its power, IP, and Wi-Fi.")
@@ -125,8 +272,11 @@ def main(camera_url):
             while True:
                 success, frame = cap.read()
                 if not success or frame is None:
-                    print("Camera stream stopped. Check the connection, then run again.")
-                    break
+                    if not cap.running:
+                        print("Camera stream stopped. Check the connection, then run again.")
+                        break
+                    time.sleep(0.001)
+                    continue
 
                 height, width = frame.shape[:2]
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -158,6 +308,9 @@ def main(camera_url):
                 if landmarks and is_visible(landmarks[0]):
                     nose = landmarks[0]
                     labels.append(f"Nose position: x={nose.x:.2f}, y={nose.y:.2f} (image coordinates)")
+                    head_angle = head_angle_from_nose_x(nose.x)
+                    servo.send_angle(head_angle)
+                    labels.append(f"Head servo: {head_angle} deg")
                 else:
                     labels.append("Face marker unavailable - face the camera")
 
@@ -176,6 +329,7 @@ def main(camera_url):
                 if cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
                     break
     finally:
+        servo.close()
         cap.release()
         cv2.destroyAllWindows()
 
@@ -187,9 +341,13 @@ if __name__ == "__main__":
         )
         parser.add_argument(
             "--camera-url",
-            help="Current ESP32 stream URL, for example http://192.168.x.x:81/stream",
+            help="ESP32 IP or camera URL; :81/stream is added when needed",
+        )
+        parser.add_argument(
+            "--servo-url",
+            help="Optional separate servo ESP32 URL; defaults to the camera board",
         )
         args = parser.parse_args()
-        main(args.camera_url or stream_url_from_user())
+        main(args.camera_url or stream_url_from_user(), args.servo_url)
     except KeyboardInterrupt:
         print("\nTracking stopped.")
