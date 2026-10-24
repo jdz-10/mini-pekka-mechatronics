@@ -8,10 +8,15 @@ preview:
 camera-modules/          ESP32-S3 camera firmware and web server
 camera-vision-scripts/   Python/OpenCV/MediaPipe body-tracking preview
 speaker-modules/         ESP32 speaker playback firmware and audio assets
+main/main/               Combined ESP32-S3 camera and servo firmware
 ```
 
-The camera and speaker sketches are separate programs. They can be flashed to their
-respective boards independently; the Python script is not uploaded to an ESP32.
+The camera, combined camera/servo, and speaker sketches are separate programs. They
+can be flashed to their respective boards independently; the Python script is not
+uploaded to an ESP32.
+
+For the combined camera/servo board, use the sketch in
+[main/main](main/main). Its camera stream and servo receiver run on the same ESP32.
 
 ## Camera-to-vision workflow
 
@@ -38,6 +43,31 @@ respective boards independently; the Python script is not uploaded to an ESP32.
 The current vision script only displays pose landmarks and smoothed upper-arm angles.
 It does **not** send motor commands or control the robot.
 
+## Camera and servo together
+
+The camera and servo use separate ESP32 boards, with the Python computer acting as
+the bridge:
+
+```text
+camera ESP32 --MJPEG video--> Python/MediaPipe --HTTP angle--> servo ESP32
+```
+
+Flash [servo.ino](servo-module/servo/servo.ino) to the servo board, set its Wi-Fi
+credentials, and note the IP printed in Serial Monitor. Then run the vision script
+with both addresses:
+
+```powershell
+cd "C:\Users\carte\OneDrive\Desktop\mini-pekka-mechatronics\camera-vision-scripts"
+python .\mini_pekka_tracking.py `
+  --camera-url http://<camera-ip>:81/stream `
+  --servo-url http://<servo-ip>
+```
+
+When a visible nose is detected, Python maps its horizontal image position to a
+head-servo angle and sends requests such as
+`http://<servo-ip>/servo?angle=90`. The servo board validates the angle and moves
+the servo. Without `--servo-url`, the Python script remains display-only.
+
 ## Speaker workflow
 
 See [speaker-modules/README.md](speaker-modules/README.md). The speaker sketch plays
@@ -51,9 +81,9 @@ firmware.
   [camera-modules/README.md](camera-modules/README.md).
 - Board pin mappings, camera settings, and the custom partition table are kept next to
   the camera sketch so they are changed together.
-- The committed camera sketch currently contains Wi-Fi credentials as source
-  constants. Replace them before flashing and do not commit real credentials; rotate
-  any credential that has already been shared in repository history.
+- Wi-Fi credentials for the combined `main` sketch belong in the ignored
+  `main/main/secrets.h`, copied from `secrets.h.example`. Arduino IDE cannot consume
+  `.env` files directly; `.env.example` documents the equivalent names.
 - The camera server has no authentication or HTTPS. Use it only on a trusted local
   network and do not expose it to the internet.
 - Large `.task` model files and the MP3 asset are runtime inputs, not Python packages
