@@ -1,0 +1,7 @@
+# Local credentials
+.env
+**/secrets.h
+
+# Python-generated files
+__pycache__/
+*.py[cod]
