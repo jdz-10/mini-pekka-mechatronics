@@ -10,8 +10,8 @@
 // ===========================
 // Enter your WiFi credentials
 // ===========================
-const char *ssid = "JOHNZLAPTOP";
-const char *password = "exclusivejohnPCspot";
+const char *ssid = "sigmanetwork";
+const char *password = "aaaaaaaa";
 
 void startCameraServer();
 void setupLedFlash();
