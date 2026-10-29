@@ -40,33 +40,33 @@ For the combined camera/servo board, use the sketch in
 5. Stand far enough from the camera for the shoulders, elbows, hips, and face to be
    visible. Press `Q` or `Esc` in the preview window to stop.
 
-The current vision script only displays pose landmarks and smoothed upper-arm angles.
-It does **not** send motor commands or control the robot.
+When a servo URL is supplied, the vision script sends head and arm commands. It
+raises each arm when its detected elevation reaches 90 degrees and lowers it below
+80 degrees, using hysteresis to reduce chatter.
 
 ## Camera and servo together
 
-The camera and servo use separate ESP32 boards, with the Python computer acting as
-the bridge:
+The combined `main` sketch puts the camera and all three servos on one ESP32. Python
+receives the MJPEG video and sends servo commands back over UDP:
 
 ```text
-camera ESP32 --MJPEG video--> Python/MediaPipe --HTTP angle--> servo ESP32
+ESP32 --MJPEG video--> Python/MediaPipe --UDP head,left-arm,right-arm--> ESP32
 ```
 
-Flash [servo.ino](servo-module/servo/servo.ino) to the servo board, set its Wi-Fi
-credentials, and note the IP printed in Serial Monitor. Then run the vision script
-with both addresses:
+Flash [main.ino](main/main/main.ino) to the combined board, set its Wi-Fi
+credentials, and note the IP printed in Serial Monitor. Then run:
 
 ```powershell
 cd "C:\Users\carte\OneDrive\Desktop\mini-pekka-mechatronics\camera-vision-scripts"
 python .\mini_pekka_tracking.py `
-  --camera-url http://<camera-ip>:81/stream `
-  --servo-url http://<servo-ip>
+  --camera-url http://<board-ip>:81/stream `
+  --servo-url http://<board-ip>
 ```
 
-When a visible nose is detected, Python maps its horizontal image position to a
-head-servo angle and sends requests such as
-`http://<servo-ip>/servo?angle=90`. The servo board validates the angle and moves
-the servo. Without `--servo-url`, the Python script remains display-only.
+When a visible nose is detected, Python maps its horizontal image position to the
+head angle and includes the left/right arm angles in the same UDP packet. The board
+also retains the manual HTTP head-servo endpoint for testing. See
+[main/main/README.md](main/main/README.md) for wiring and packet details.
 
 ## Speaker workflow
 
@@ -81,6 +81,9 @@ firmware.
   [camera-modules/README.md](camera-modules/README.md).
 - Board pin mappings, camera settings, and the custom partition table are kept next to
   the camera sketch so they are changed together.
+- On the combined ESP32-S3 sketch, the head servo uses GPIO 14 and the arm servos use
+  GPIO 1 and GPIO 2. GPIO 43 and GPIO 44 are reserved for the default UART0 serial
+  connection.
 - Wi-Fi credentials for the combined `main` sketch belong in the ignored
   `main/main/secrets.h`, copied from `secrets.h.example`. Arduino IDE cannot consume
   `.env` files directly; `.env.example` documents the equivalent names.

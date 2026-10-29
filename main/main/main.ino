@@ -11,11 +11,15 @@ const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASSWORD;
 
 const int SERVO_PIN = 14;
+const int LEFT_ARM_SERVO_PIN = 41;
+const int RIGHT_ARM_SERVO_PIN = 46;
 const int MIN_ANGLE = 0;
 const int MAX_ANGLE = 180;
 const unsigned int SERVO_UDP_PORT = 4210;
 
 Servo headServo;
+Servo leftArmServo;
+Servo rightArmServo;
 WiFiUDP servoUdp;
 int headAngle = 90;
 
@@ -33,6 +37,16 @@ void setup() {
     Serial.println("Servo attach failed.");
   }
   headServo.write(headAngle);
+  leftArmServo.setPeriodHertz(50);
+  rightArmServo.setPeriodHertz(50);
+  if (!leftArmServo.attach(LEFT_ARM_SERVO_PIN, 500, 2400)) {
+    Serial.println("Left arm servo attach failed.");
+  }
+  if (!rightArmServo.attach(RIGHT_ARM_SERVO_PIN, 500, 2400)) {
+    Serial.println("Right arm servo attach failed.");
+  }
+  leftArmServo.write(0);
+  rightArmServo.write(180);
 
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -119,16 +133,23 @@ void setup() {
 void loop() {
   int packetSize = servoUdp.parsePacket();
   if (packetSize > 0) {
-    char packet[16];
+    char packet[32];
     int length = servoUdp.read(packet, sizeof(packet) - 1);
     packet[length] = '\0';
 
-    char *end = nullptr;
-    long requestedAngle = strtol(packet, &end, 10);
-    if (end != packet && (*end == '\0' || *end == '\r' || *end == '\n') &&
-        requestedAngle >= MIN_ANGLE && requestedAngle <= MAX_ANGLE) {
-      headAngle = static_cast<int>(requestedAngle);
-      headServo.write(headAngle);
+    int requestedHead;
+    int requestedLeft;
+    int requestedRight;
+    int values = sscanf(packet, "%d,%d,%d", &requestedHead, &requestedLeft,
+                        &requestedRight);
+    if (values == 3 &&
+        requestedHead >= MIN_ANGLE && requestedHead <= MAX_ANGLE &&
+        requestedLeft >= MIN_ANGLE && requestedLeft <= MAX_ANGLE &&
+        requestedRight >= MIN_ANGLE && requestedRight <= MAX_ANGLE) {
+      headAngle = requestedHead;
+      headServo.write(requestedHead);
+      leftArmServo.write(requestedLeft);
+      rightArmServo.write(requestedRight);
     }
   }
 

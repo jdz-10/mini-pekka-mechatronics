@@ -85,10 +85,12 @@ unavailable.
 - `pose_landmarker_lite.task` — MediaPipe pose model loaded by the script.
 - `hand_landmarker.task` — available hand model for future work; currently unused.
 
-The current control path only commands the head servo. It does not command arm motors.
-The servo board validates angles from 0 through 180 degrees. A future motor-control
-layer should add calibration, speed limits, a communication watchdog, and an
-emergency stop rather than using pose values without safety checks.
+The control path commands the head servo and two arm servos. Each arm raises when its
+smoothed elevation reaches 90 degrees (sideways or higher), and returns down below
+80 degrees. The left arm uses angles 0 (down) and 90 (raised); the right arm uses
+180 (down) and 90 (raised). The ESP32 validates all three angles from 0 through 180.
+A future motor-control layer should add calibration, speed limits, a communication
+watchdog, and an emergency stop rather than using pose values without safety checks.
 
 The Python capture loop intentionally keeps only the newest camera frame. This avoids
 latency accumulating when MediaPipe takes longer to process a frame than the camera

@@ -4,7 +4,7 @@ Put pose_landmarker_lite.task beside this file. Download it from:
 https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task
 
 Run with the same Python environment as your working camera test.
-Requires mediapipe and OpenCV. An optional servo ESP32 receives head-angle commands.
+Requires mediapipe and OpenCV. The ESP32 receives head and arm-servo commands.
 """
 
 import argparse
@@ -27,6 +27,12 @@ SERVO_MIN_CHANGE = 2
 SERVO_MIN_ANGLE = 0
 SERVO_MAX_ANGLE = 180
 SERVO_UDP_PORT = 4210
+ARM_RAISE_THRESHOLD = 90
+ARM_LOWER_THRESHOLD = 80
+LEFT_ARM_DOWN_ANGLE = 0
+LEFT_ARM_RAISED_ANGLE = 90
+RIGHT_ARM_DOWN_ANGLE = 180
+RIGHT_ARM_RAISED_ANGLE = 90
 WINDOW = "Mini Pekka - body tracking (Q to quit)"
 
 # Left/right refer to YOUR body, not the left/right sides of the picture.
@@ -133,40 +139,46 @@ class ServoClient:
         if self.host is None:
             raise SystemExit("Invalid servo board URL.")
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.pending_angle = None
-        self.last_sent_angle = None
+        self.pending_angles = None
+        self.last_sent_angles = None
         self.last_error_at = 0.0
         self.condition = threading.Condition()
         self.running = True
         self.worker = threading.Thread(target=self._send_pending, daemon=True)
         self.worker.start()
 
-    def send_angle(self, angle):
+    def send_angles(self, angles):
         with self.condition:
             if (
-                self.pending_angle is not None
-                and abs(angle - self.pending_angle) < SERVO_MIN_CHANGE
+                self.pending_angles is not None
+                and all(
+                    abs(current - pending) < SERVO_MIN_CHANGE
+                    for current, pending in zip(angles, self.pending_angles)
+                )
             ) or (
-                self.last_sent_angle is not None
-                and abs(angle - self.last_sent_angle) < SERVO_MIN_CHANGE
+                self.last_sent_angles is not None
+                and all(
+                    abs(current - sent) < SERVO_MIN_CHANGE
+                    for current, sent in zip(angles, self.last_sent_angles)
+                )
             ):
                 return
-            self.pending_angle = angle
+            self.pending_angles = angles
             self.condition.notify()
 
     def _send_pending(self):
         while True:
             with self.condition:
-                while self.running and self.pending_angle is None:
+                while self.running and self.pending_angles is None:
                     self.condition.wait()
                 if not self.running:
                     return
-                angle = self.pending_angle
-                self.pending_angle = None
+                angles = self.pending_angles
+                self.pending_angles = None
 
             try:
                 self.socket.sendto(
-                    f"{angle}\n".encode("ascii"),
+                    f"{angles[0]},{angles[1]},{angles[2]}\n".encode("ascii"),
                     (self.host, SERVO_UDP_PORT),
                 )
             except OSError as error:
@@ -177,7 +189,7 @@ class ServoClient:
                 continue
 
             with self.condition:
-                self.last_sent_angle = angle
+                self.last_sent_angles = angles
             time.sleep(SERVO_UPDATE_INTERVAL)
 
     def close(self):
@@ -234,6 +246,15 @@ def head_angle_from_nose_x(nose_x):
     )
 
 
+def update_arm_state(angle, is_raised):
+    """Apply hysteresis so an arm near the threshold does not chatter."""
+    if angle is None:
+        return is_raised
+    if is_raised:
+        return angle >= ARM_LOWER_THRESHOLD
+    return angle >= ARM_RAISE_THRESHOLD
+
+
 def main(camera_url, servo_url=None):
     camera_url = normalize_camera_url(camera_url)
     servo_url = servo_url or servo_url_from_camera_url(camera_url)
@@ -253,7 +274,7 @@ def main(camera_url, servo_url=None):
     )
 
     print(f"Connecting to {camera_url}")
-    print(f"Sending head commands to {servo_url}")
+    print(f"Sending head and arm commands to {servo_url} over UDP port {SERVO_UDP_PORT}")
     servo = ServoClient(servo_url)
     cap = LatestFrameCapture(camera_url)
     try:
@@ -263,6 +284,7 @@ def main(camera_url, servo_url=None):
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(WINDOW, 800, 700)
         smoothed = {side: None for side in ARMS}
+        arm_raised = {"Left": False, "Right": False}
         last_timestamp = -1
         start = time.monotonic()
         print("Stand facing the camera with your shoulders, elbows and hips visible.")
@@ -303,16 +325,27 @@ def main(camera_url, servo_url=None):
                     else:
                         previous = smoothed[side]
                         smoothed[side] = angle if previous is None else previous + SMOOTHING * (angle - previous)
+                        arm_raised[side] = update_arm_state(angle, arm_raised[side])
                         labels.append(f"{side} upper arm: {smoothed[side]:.0f} deg")
+                    labels.append(f"{side} arm servo: {'raised' if arm_raised[side] else 'down'}")
 
+                head_angle = None
                 if landmarks and is_visible(landmarks[0]):
                     nose = landmarks[0]
                     labels.append(f"Nose position: x={nose.x:.2f}, y={nose.y:.2f} (image coordinates)")
                     head_angle = head_angle_from_nose_x(nose.x)
-                    servo.send_angle(head_angle)
                     labels.append(f"Head servo: {head_angle} deg")
                 else:
                     labels.append("Face marker unavailable - face the camera")
+
+                if head_angle is not None:
+                    left_arm_angle = (
+                        LEFT_ARM_RAISED_ANGLE if arm_raised["Left"] else LEFT_ARM_DOWN_ANGLE
+                    )
+                    right_arm_angle = (
+                        RIGHT_ARM_RAISED_ANGLE if arm_raised["Right"] else RIGHT_ARM_DOWN_ANGLE
+                    )
+                    servo.send_angles((head_angle, left_arm_angle, right_arm_angle))
 
                 labels.append("0=arm down | 90=sideways | 180=overhead | Q=quit")
                 panel_y = preview.shape[0]
