@@ -50,11 +50,12 @@ curl.exe "http://<board-ip>/servo?angle=45"
 curl.exe "http://<board-ip>/servo?angle=135"
 ```
 
-The endpoint accepts whole-number angles from 0 through 180. The head-servo signal
-is on GPIO 14; left- and right-arm servos use GPIO 1 and GPIO 2. GPIO 43 and GPIO
-44 are reserved for the ESP32-S3's default UART0 serial connection and must not be
-used for servos. UDP packets from Python contain three comma-separated angles, for
-example `90,0,180`.
+The endpoint accepts whole-number angles from 0 through 180. On the nulllaborg
+ESP32-S3-CAM, the head-servo signal is on GPIO 14; left- and right-arm servos use
+GPIO 41 and GPIO 46. These pins are exposed on the board header and are not part
+of this board's camera interface. GPIO 43 and GPIO 44 are reserved for the
+ESP32-S3's default UART0 serial connection and must not be used for servos. UDP
+packets from Python contain three comma-separated angles, for example `90,0,180`.
 Use appropriate servo power and connect the servo power ground to ESP32 ground.
 
 ## Run with Python
@@ -68,5 +69,7 @@ python .\mini_pekka_tracking.py `
 ```
 
 Python reads the MJPEG stream on port 81 and sends head/arm angle commands over UDP
-port 4210. An arm is raised when its smoothed elevation reaches 90 degrees
+port 4210. The firmware verifies that this port is available during startup and
+reports a bind failure in Serial Monitor instead of claiming the endpoint is active.
+An arm is raised when its smoothed elevation reaches 90 degrees
 (sideways); it returns down below 80 degrees to prevent threshold chatter.

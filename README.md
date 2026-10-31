@@ -81,9 +81,9 @@ firmware.
   [camera-modules/README.md](camera-modules/README.md).
 - Board pin mappings, camera settings, and the custom partition table are kept next to
   the camera sketch so they are changed together.
-- On the combined ESP32-S3 sketch, the head servo uses GPIO 14 and the arm servos use
-  GPIO 1 and GPIO 2. GPIO 43 and GPIO 44 are reserved for the default UART0 serial
-  connection.
+- On the combined nulllaborg ESP32-S3-CAM sketch, the head servo uses GPIO 14 and
+  the arm servos use GPIO 41 and GPIO 46. GPIO 43 and GPIO 44 are reserved for the
+  default UART0 serial connection.
 - Wi-Fi credentials for the combined `main` sketch belong in the ignored
   `main/main/secrets.h`, copied from `secrets.h.example`. Arduino IDE cannot consume
   `.env` files directly; `.env.example` documents the equivalent names.
