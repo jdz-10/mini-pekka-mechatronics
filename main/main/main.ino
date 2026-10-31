@@ -11,6 +11,8 @@ const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASSWORD;
 
 const int SERVO_PIN = 14;
+// GPIO 41 and GPIO 46 are exposed on the nulllaborg ESP32-S3-CAM header and
+// are not used by this board's camera interface.
 const int LEFT_ARM_SERVO_PIN = 41;
 const int RIGHT_ARM_SERVO_PIN = 46;
 const int MIN_ANGLE = 0;
@@ -21,6 +23,7 @@ Servo headServo;
 Servo leftArmServo;
 Servo rightArmServo;
 WiFiUDP servoUdp;
+bool servoUdpReady = false;
 int headAngle = 90;
 
 void startCameraServer();
@@ -120,17 +123,34 @@ void setup() {
   }
 
   Serial.println("\nWi-Fi connected.");
-  servoUdp.begin(SERVO_UDP_PORT);
+  servoUdpReady = servoUdp.begin(SERVO_UDP_PORT) == 1;
+  if (!servoUdpReady) {
+    Serial.printf("Failed to bind servo UDP port %u. Retrying...\n",
+                  SERVO_UDP_PORT);
+    servoUdp.stop();
+    delay(100);
+    servoUdpReady = servoUdp.begin(SERVO_UDP_PORT) == 1;
+  }
+  if (!servoUdpReady) {
+    Serial.printf("Servo UDP unavailable on port %u.\n", SERVO_UDP_PORT);
+  }
   Serial.print("Combined camera/servo address: http://");
   Serial.println(WiFi.localIP());
 
   startCameraServer();
   Serial.println("Camera page: port 80 | MJPEG stream: port 81");
   Serial.println("Servo endpoint: /servo?angle=90");
-  Serial.println("Servo UDP port: 4210");
+  if (servoUdpReady) {
+    Serial.printf("Servo UDP port: %u\n", SERVO_UDP_PORT);
+  }
 }
 
 void loop() {
+  if (!servoUdpReady) {
+    delay(1000);
+    return;
+  }
+
   int packetSize = servoUdp.parsePacket();
   if (packetSize > 0) {
     char packet[32];
