@@ -17,6 +17,8 @@ const char *password = WIFI_PASSWORD;
 // GPIO 14, 41, and 42 are used for servo outputs on this board configuration.
 // GPIO 46 is input-only on the ESP32-S3 and cannot drive a servo.
 const int SERVO_PIN = 14;
+// GPIO 41 and GPIO 42 are exposed on the nulllaborg ESP32-S3-CAM header and
+// are not used by this board's camera interface.
 const int LEFT_ARM_SERVO_PIN = 41;
 const int RIGHT_ARM_SERVO_PIN = 42;
 const int HEAD_PWM_CHANNEL = 4;
