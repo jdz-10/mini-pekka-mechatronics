@@ -82,8 +82,14 @@ firmware.
 - Board pin mappings, camera settings, and the custom partition table are kept next to
   the camera sketch so they are changed together.
 - On the combined nulllaborg ESP32-S3-CAM sketch, the head servo uses GPIO 14 and
-  the arm servos use GPIO 41 and GPIO 46. GPIO 43 and GPIO 44 are reserved for the
+  the arm servos use GPIO 41 and GPIO 42. The firmware drives them with dedicated
+  LEDC PWM outputs; the camera uses LEDC channel 0 and the Arduino core allocates
+  the servo channels separately. GPIO 43 and GPIO 44 are reserved for the
   default UART0 serial connection.
+- Power the servos from a separate 5 V supply sized for their combined
+  startup/stall current, with the supply ground connected to ESP32 ground. A servo
+  current spike can brown out the ESP32 when recognition first commands movement,
+  which makes the camera stream appear to freeze.
 - Wi-Fi credentials for the combined `main` sketch belong in the ignored
   `main/main/secrets.h`, copied from `secrets.h.example`. Arduino IDE cannot consume
   `.env` files directly; `.env.example` documents the equivalent names.

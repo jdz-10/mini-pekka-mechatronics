@@ -1,6 +1,10 @@
 #include <Arduino.h>
 #include "esp_camera.h"
-#include <ESP32Servo.h>
+#if __has_include("esp_arduino_version.h")
+#include "esp_arduino_version.h"
+#else
+#define ESP_ARDUINO_VERSION_MAJOR 2
+#endif
 #include <WiFi.h>
 #include <WiFiUdp.h>
 
@@ -10,46 +14,90 @@
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASSWORD;
 
+// GPIO 14, 41, and 42 are used for servo outputs on this board configuration.
+// GPIO 46 is input-only on the ESP32-S3 and cannot drive a servo.
 const int SERVO_PIN = 14;
-// GPIO 41 and GPIO 46 are exposed on the nulllaborg ESP32-S3-CAM header and
-// are not used by this board's camera interface.
 const int LEFT_ARM_SERVO_PIN = 41;
-const int RIGHT_ARM_SERVO_PIN = 46;
+const int RIGHT_ARM_SERVO_PIN = 42;
+const int HEAD_PWM_CHANNEL = 4;
+const int LEFT_ARM_PWM_CHANNEL = 5;
+const int RIGHT_ARM_PWM_CHANNEL = 6;
+const int SERVO_PWM_FREQUENCY = 50;
+const int SERVO_PWM_RESOLUTION = 14;
+const int SERVO_MIN_PULSE_US = 500;
+const int SERVO_MAX_PULSE_US = 2400;
 const int MIN_ANGLE = 0;
 const int MAX_ANGLE = 180;
 const unsigned int SERVO_UDP_PORT = 4210;
 
-Servo headServo;
-Servo leftArmServo;
-Servo rightArmServo;
 WiFiUDP servoUdp;
 bool servoUdpReady = false;
 int headAngle = 90;
+int lastLoggedHead = -1;
+int lastLoggedLeft = -1;
+int lastLoggedRight = -1;
 
 void startCameraServer();
 void setupLedFlash();
+
+int servoDutyForAngle(int angle) {
+  const int pulseUs = map(angle, MIN_ANGLE, MAX_ANGLE,
+                           SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US);
+  const uint32_t maxDuty = (1UL << SERVO_PWM_RESOLUTION) - 1;
+  return static_cast<int>((static_cast<uint64_t>(pulseUs) * maxDuty) / 20000);
+}
+
+bool attachServoPwm(int pin, int channel) {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  // Core 3 allocates the LEDC channel from the pin attachment.
+  return ledcAttach(pin, SERVO_PWM_FREQUENCY, SERVO_PWM_RESOLUTION);
+#else
+  if (ledcSetup(channel, SERVO_PWM_FREQUENCY, SERVO_PWM_RESOLUTION) == 0) {
+    return false;
+  }
+  ledcAttachPin(pin, channel);
+  return true;
+#endif
+}
+
+void writeServoAngle(int channel, int angle) {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  const int pin = channel == HEAD_PWM_CHANNEL
+                      ? SERVO_PIN
+                      : channel == LEFT_ARM_PWM_CHANNEL
+                          ? LEFT_ARM_SERVO_PIN
+                          : RIGHT_ARM_SERVO_PIN;
+  ledcWrite(pin, servoDutyForAngle(angle));
+#else
+  ledcWrite(channel, servoDutyForAngle(angle));
+#endif
+}
+
+void writeHeadServo(int angle) {
+  writeServoAngle(HEAD_PWM_CHANNEL, angle);
+}
 
 void setup() {
   Serial.begin(115200);
   delay(2000);
   Serial.println("\nStarting combined camera and servo setup...");
   Serial.setDebugOutput(true);
+  Serial.printf("Servo pins: head=%d (LEDC %d), left=%d (LEDC %d), "
+                "right=%d (LEDC %d)\n",
+                SERVO_PIN, HEAD_PWM_CHANNEL, LEFT_ARM_SERVO_PIN,
+                LEFT_ARM_PWM_CHANNEL, RIGHT_ARM_SERVO_PIN, RIGHT_ARM_PWM_CHANNEL);
 
-  headServo.setPeriodHertz(50);
-  if (!headServo.attach(SERVO_PIN, 500, 2400)) {
-    Serial.println("Servo attach failed.");
-  }
-  headServo.write(headAngle);
-  leftArmServo.setPeriodHertz(50);
-  rightArmServo.setPeriodHertz(50);
-  if (!leftArmServo.attach(LEFT_ARM_SERVO_PIN, 500, 2400)) {
-    Serial.println("Left arm servo attach failed.");
-  }
-  if (!rightArmServo.attach(RIGHT_ARM_SERVO_PIN, 500, 2400)) {
-    Serial.println("Right arm servo attach failed.");
-  }
-  leftArmServo.write(0);
-  rightArmServo.write(180);
+  bool headAttached = attachServoPwm(SERVO_PIN, HEAD_PWM_CHANNEL);
+  bool leftAttached = attachServoPwm(LEFT_ARM_SERVO_PIN, LEFT_ARM_PWM_CHANNEL);
+  bool rightAttached = attachServoPwm(RIGHT_ARM_SERVO_PIN, RIGHT_ARM_PWM_CHANNEL);
+  writeHeadServo(headAngle);
+  writeServoAngle(LEFT_ARM_PWM_CHANNEL, 0);
+  writeServoAngle(RIGHT_ARM_PWM_CHANNEL, 180);
+  Serial.printf("Servo attach status: head=%s, left=%s, right=%s\n",
+                headAttached ? "OK" : "FAILED",
+                leftAttached ? "OK" : "FAILED",
+                rightAttached ? "OK" : "FAILED");
+  Serial.println("Initial servo angles: head=90, left=0, right=180");
 
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -156,6 +204,9 @@ void loop() {
     char packet[32];
     int length = servoUdp.read(packet, sizeof(packet) - 1);
     packet[length] = '\0';
+    Serial.printf("UDP packet from %s:%u (%d bytes): \"%s\"\n",
+                  servoUdp.remoteIP().toString().c_str(), servoUdp.remotePort(),
+                  packetSize, packet);
 
     int requestedHead;
     int requestedLeft;
@@ -167,9 +218,23 @@ void loop() {
         requestedLeft >= MIN_ANGLE && requestedLeft <= MAX_ANGLE &&
         requestedRight >= MIN_ANGLE && requestedRight <= MAX_ANGLE) {
       headAngle = requestedHead;
-      headServo.write(requestedHead);
-      leftArmServo.write(requestedLeft);
-      rightArmServo.write(requestedRight);
+      writeHeadServo(requestedHead);
+      writeServoAngle(LEFT_ARM_PWM_CHANNEL, requestedLeft);
+      writeServoAngle(RIGHT_ARM_PWM_CHANNEL, requestedRight);
+      if (requestedHead != lastLoggedHead ||
+          requestedLeft != lastLoggedLeft ||
+          requestedRight != lastLoggedRight) {
+        Serial.printf("Applied angles: head=%d, left=%d, right=%d (right GPIO %d)\n",
+                      requestedHead, requestedLeft, requestedRight,
+                      RIGHT_ARM_SERVO_PIN);
+        lastLoggedHead = requestedHead;
+        lastLoggedLeft = requestedLeft;
+        lastLoggedRight = requestedRight;
+      }
+    } else {
+      Serial.printf("Rejected UDP packet: parsed %d value(s); expected three "
+                    "angles from %d to %d.\n",
+                    values, MIN_ANGLE, MAX_ANGLE);
     }
   }
 

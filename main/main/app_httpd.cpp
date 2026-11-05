@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include "Arduino.h"
-#include "ESP32Servo.h"
+
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "esp_camera.h"
@@ -50,8 +50,8 @@ static const char *_STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %
 httpd_handle_t stream_httpd = NULL;
 httpd_handle_t camera_httpd = NULL;
 
-extern Servo headServo;
 extern int headAngle;
+extern void writeHeadServo(int angle);
 
 typedef struct {
   size_t size;   //number of values used for filtering
@@ -349,7 +349,7 @@ static esp_err_t servo_handler(httpd_req_t *req) {
   }
 
   headAngle = static_cast<int>(requested_angle);
-  headServo.write(headAngle);
+  writeHeadServo(headAngle);
   Serial.printf("Servo angle: %d\n", headAngle);
 
   char response[32];
